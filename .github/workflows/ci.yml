@@ -16,7 +16,7 @@ jobs:
     # The local commit-msg hook (.husky/commit-msg) can be bypassed -- a merge via the GitHub web UI, a commit from a tool that doesn't run hooks. This checks every commit on a pull request against the same rules. Nothing to check on a plain push to main: those commits already passed this exact job on their pull request.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -47,13 +47,16 @@ jobs:
           curl -sLO "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
           echo "${ACTIONLINT_SHA256}  actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" | sha256sum -c -
           tar xzf "actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" actionlint
-      - run: ./actionlint -color
+      # -ignore suppresses one specific, confirmed false positive: actionlint doesn't know that a `secrets: inherit` caller can pass a secret this workflow's own workflow_call.secrets block never declares (sibling-dependency-update.yml's `secrets.AUTOMERGE_APP_PRIVATE_KEY` fallback -- see that file's own comment at both call sites). Scoped to that exact message so any other actionlint finding still fails the build.
+      - run: ./actionlint -color -ignore 'property "automerge_app_private_key" is not defined'
 
   # typecheck/lint/format each route through `turbo run <task>` rather than a plain `npm run` so a rerun with nothing relevant changed completes from cache instead of re-executing tsc/eslint/prettier from scratch.
+  #
+  # This job's (and commitlint's/lint's/format's) 10-minute timeout, not 5: setup-node's own cache: npm hint only helps once a prior successful run has actually saved one (the cache-save post-step never runs for a job that fails or times out), so the first run on a brand-new repo -- and any run immediately following one where every npm-ci job failed -- pays a genuinely cold `npm ci` with no cache at all. Confirmed directly on this repo's own first push: `npm ci` alone ran past 5 minutes uncached and every timeout-minutes: 5 job here was killed mid-install, never even reaching the actual lint/typecheck/format command.
   typecheck:
     name: Typecheck
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -68,7 +71,7 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -83,7 +86,7 @@ jobs:
   format:
     name: Format
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
