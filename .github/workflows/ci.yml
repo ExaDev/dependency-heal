@@ -1,0 +1,143 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  commitlint:
+    name: Commitlint
+    # The local commit-msg hook (.husky/commit-msg) can be bypassed -- a merge via the GitHub web UI, a commit from a tool that doesn't run hooks. This checks every commit on a pull request against the same rules. Nothing to check on a plain push to main: those commits already passed this exact job on their pull request.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npx commitlint --from ${{ github.event.pull_request.base.sha }} --to ${{ github.event.pull_request.head.sha }} --verbose
+
+  actionlint:
+    name: Actionlint
+    # No action wrapper: actionlint is a self-contained static binary. Download the pinned release directly and verify its checksum, rather than trusting a third-party action.yml or an unpinned install script.
+    env:
+      ACTIONLINT_VERSION: "1.7.12"
+      ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Install actionlint
+        run: |
+          curl -sLO "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" | sha256sum -c -
+          tar xzf "actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" actionlint
+      - run: ./actionlint -color
+
+  # typecheck/lint/format each route through `turbo run <task>` rather than a plain `npm run` so a rerun with nothing relevant changed completes from cache instead of re-executing tsc/eslint/prettier from scratch.
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npx turbo run typecheck
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npx turbo run lint
+
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npx turbo run format:check
+
+  # A single stable branch-protection target aggregating every job that runs on every pull request, so the required status check doesn't need updating whenever a job is added, renamed, or split -- only this job's own needs: list changes. if: always() so this job still runs (and can fail) even when a dependency failed outright, rather than being skipped itself; a dependency that never ran for this event (commitlint on a plain push to main) reports "skipped", not "failure" or "cancelled", so it doesn't block release below.
+  required-checks:
+    name: Required Checks
+    if: always()
+    needs: [commitlint, actionlint, typecheck, lint, format]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: All required jobs passed
+        run: |
+          results="${{ join(needs.*.result, ' ') }}"
+          for result in $results; do
+            if [[ "$result" == "failure" || "$result" == "cancelled" ]]; then
+              exit 1
+            fi
+          done
+
+  # Computes the next version from commits since the last tag, generates release notes and a CHANGELOG.md entry, creates the GitHub Release and version tag, commits CHANGELOG.md back to main, and (via the move-major-tag plugin in release.config.ts) moves the moving vN tag to point at the new release -- see release.config.ts and scripts/move-major-tag.mjs. There is no npm-publish step and therefore no id-token: write permission -- this repository ships a reusable GitHub Actions workflow, not an npm package.
+  #
+  # Pushes with the job's own GITHUB_TOKEN, not a GitHub App installation token: this repository currently has no branch protection on main (matching ExaDev/claude-code-action's own precedent at the time this repo was created), so there is no bypass-identity requirement to satisfy yet -- GITHUB_TOKEN's github-actions[bot] identity can push the release commit and tag directly. If branch protection requiring status checks is ever added to main, this step will need a GitHub App installation token instead (github-actions[bot] can never bypass branch protection, by GitHub's own design) -- see ExaDev/claude-code-action's ci.yml `release` job for the exact pattern to follow when that day comes.
+  release:
+    name: Release
+    needs: [required-checks]
+    # A bare `github.ref == ... && github.event_name == ...` here would look sufficient but isn't: without one of always()/success()/failure()/cancelled(), GitHub implicitly ANDs the condition with success() evaluated over the *entire* transitive job graph, not just needs: [required-checks] -- and commitlint (an ancestor via required-checks, skipped by its own `if:` on every push to main) reports "skipped", which fails that implicit check even though required-checks itself passed. always() plus an explicit check of required-checks' own result is what actually asks "did the one job I depend on succeed", ignoring how it got there.
+    if: always() && needs.required-checks.result == 'success' && github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # to push the release commit/tag and create the GitHub Release
+      issues: write # to comment on released issues
+      pull-requests: write # to comment on released pull requests
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          # semantic-release analyses the full commit history since the last tag.
+          fetch-depth: 0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Release
+        # HUSKY=0 so the commit-msg hook never fires against the automated release commit.
+        run: HUSKY=0 npx semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

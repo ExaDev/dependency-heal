@@ -1,0 +1,35 @@
+# One github-actions entry with directory: "/" scans .github/workflows/*.yml, so it opens bump PRs for actions/checkout, actions/setup-node, actions/create-github-app-token, and any other pinned action -- routine dependency hygiene against the SHA-pinned actions ci.yml and sibling-dependency-update.yml reference.
+version: 2
+
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    # A newly-published release can be a compromised maintainer account or a broken build before anyone's had time to notice -- the same reasoning behind a package manager's own minimum-release-age setting. A bump only becomes a pull request once its release has survived a week unretracted.
+    cooldown:
+      default-days: 7
+    # Dependabot's default commit message for this ecosystem carries no conventional-commit type at all, which fails this repository's commitlint job. "build" is in the shared commitTypes list (release.config.ts) and maps to a patch release -- correct for a dependency bump with no behavioural change of its own.
+    commit-message:
+      prefix: "build"
+      include: "scope"
+    open-pull-requests-limit: 10
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "build"
+      include: "scope"
+    open-pull-requests-limit: 10
+    groups:
+      npm-dependencies:
+        patterns:
+          - "*"

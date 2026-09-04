@@ -1,0 +1,38 @@
+{
+  "name": "dependency-heal",
+  "version": "0.0.0-managed-by-semantic-release",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.22.1 <23.0.0 || >=23.6.0"
+  },
+  "description": "Reusable GitHub Actions workflow that bumps a sibling ExaDev-published dependency the instant it releases, and heals any resulting pull request that falls behind main before it can merge.",
+  "scripts": {
+    "prepare": "husky",
+    "typecheck": "tsc",
+    "lint": "eslint .",
+    "lint:fix": "eslint --fix .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@commitlint/cli": "21.2.2",
+    "@commitlint/config-conventional": "21.2.2",
+    "@eslint/json": "2.1.0",
+    "@eslint/markdown": "8.0.3",
+    "@semantic-release/changelog": "7.0.0",
+    "@semantic-release/git": "11.0.1",
+    "@types/node": "26.4.1",
+    "eslint": "10.9.1",
+    "eslint-config-prettier": "10.1.8",
+    "eslint-plugin-prettier": "5.5.6",
+    "husky": "9.1.7",
+    "jiti": "2.7.0",
+    "lint-staged": "17.4.1",
+    "prettier": "3.9.6",
+    "semantic-release": "25.0.9",
+    "turbo": "2.10.12",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.69.0"
+  }
+}
