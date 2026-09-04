@@ -3,6 +3,7 @@
   "version": "0.0.0-managed-by-semantic-release",
   "private": true,
   "type": "module",
+  "packageManager": "npm@11.19.0",
   "engines": {
     "node": ">=22.22.1 <23.0.0 || >=23.6.0"
   },

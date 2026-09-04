@@ -6,6 +6,8 @@ import markdown from "@eslint/markdown";
 import eslintPluginPrettierRecommended from "eslint-plugin-prettier/recommended";
 
 export default defineConfig([
+  // A files-less ignores-only entry applies globally, across every config below -- node_modules/** is already ESLint's own default ignore, but .turbo/** isn't: turbo writes its own cache manifests as single-line, non-pretty-printed JSON with nanosecond timestamps, which trips both prettier/prettier and json/no-unsafe-values the moment more than one `npx turbo run <task>` has populated it in the same working directory (confirmed locally -- CI's own Typecheck/Lint/Format jobs never hit this since each runs in an isolated fresh checkout with only one turbo task, but a local `npx turbo run typecheck` followed by `npx turbo run lint` in the same tree does).
+  { ignores: [".turbo/**"] },
   {
     files: ["**/*.ts"],
     extends: [tseslint.configs.recommended],
