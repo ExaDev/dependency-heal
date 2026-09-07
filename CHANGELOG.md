@@ -1,3 +1,10 @@
+## [1.0.2](https://github.com/ExaDev/dependency-heal/compare/v1.0.1...v1.0.2) (2026-09-07)
+
+### Bug Fixes
+
+- pass matrix branch/PR values through env, not inline run: interpolation ([f875cbe](https://github.com/ExaDev/dependency-heal/commit/f875cbeb351d0fb85d8681b5f721c8ba6ae49f34))
+- stop serializing stranded-PR healing behind each other's CI wait ([076b98c](https://github.com/ExaDev/dependency-heal/commit/076b98c9f98076dd97a1b35676a666b0cb2d42fe))
+
 ## [1.0.1](https://github.com/ExaDev/dependency-heal/compare/v1.0.0...v1.0.1) (2026-09-07)
 
 ### Bug Fixes
