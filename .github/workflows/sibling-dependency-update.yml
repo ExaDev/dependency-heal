@@ -10,7 +10,7 @@ name: Sibling dependency instant update
 #
 # Both bump sites -- the dispatch handler and the heal path's regeneration -- are idempotent by version ordering, not by diff presence: pnpm add only runs when the named version is strictly above what the default branch already pins for the package (package.json's current spec across its dependency tables, range caret stripped -- the form pnpm add itself writes). A no-op guarded on diff presence catches only an exact replay; a named version below current main still diffs -- a downgrade diffs as readily as an upgrade -- and the PR it opens is a downgrade the wait-for-green gate will merge as happily as any upgrade. A caller with no declared dependency on the package at all -- an empty floor -- is treated identically to "at or below": there is nothing to bump, never an invitation to add a dependency the caller never declared. Without this, a caller repo dispatched a package it doesn't actually depend on would have `pnpm add` silently introduce it as brand new, since an empty floor previously fell straight through the ordering check.
 #
-# This workflow never pushes directly to main -- the PR only merges once the caller repo's own required checks genuinely pass on it, and (when branch protection is configured with required status checks) GitHub itself refuses the merge until they do, independent of this script's own polling logic being correct.
+# This workflow never pushes directly to main -- the PR only merges once the caller repo's own required checks genuinely pass on it, and (when branch protection is configured with required status checks) GitHub itself refuses the merge until they do, independent of this script's own polling logic being correct. Neither merge step below pre-judges the PR on every check-run's conclusion for exactly this reason: a caller can have optional, non-required check-runs (a review bot, a label sync) that fail for reasons having nothing to do with mergeability -- e.g. novus-power/hive's own Claude Review action refuses to run at all for a bot-authored PR unless the bot's login is in its allowed_bots list, which stranded every sibling-update PR open at once until that config caught up. Both steps below only wait for every check-run to stop being pending, then hand the actual accept/reject decision to `gh pr merge` itself, which GitHub backs with the real required-status-checks list -- the one source of truth for what's actually required, never duplicated or guessed at here.
 #
 # app-id defaults to the org-wide 'exadev' App a caller relies on via `secrets: inherit` (which passes AUTOMERGE_APP_PRIVATE_KEY through under that same name regardless of this input) -- passing a different app-id is for a caller authenticating as a different installed App instead (e.g. a cross-org caller where the org-wide App was never installed).
 #
@@ -114,12 +114,21 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
           branch="sibling-update/${PACKAGE}-${VERSION}"
+
+          # A burst of releases from the same sibling package (several patch versions publishing in quick succession, each firing its own repository_dispatch) previously left one open PR per version sitting side by side forever -- nothing here ever closed an older one once a newer release superseded it. Any other open sibling-update/<PACKAGE>-* PR at this point can only be for a strictly older version of this exact package: the idempotence guard above already exited early for a dispatched version at or below what main currently holds, so an open PR here was itself opened for something between that floor and this new version. Close it and delete its branch before opening the new one, mirroring heal-stranded-prs' own regenerate_pr close-then-recreate pattern below.
+          # shellcheck disable=SC2016 # $pkg in the --jq program below is a jq variable bound by --arg, not a shell one -- single-quoting the jq program is correct, not a mistake.
+          while IFS=$'\t' read -r stale_number stale_branch; do
+            [ -z "$stale_number" ] && continue
+            gh pr close "$stale_number" --comment "Superseded by a newer ${PACKAGE} release -- this dispatch bumps to ${VERSION}." || true
+            git push origin --delete "$stale_branch" || echo "::warning::could not delete superseded branch ${stale_branch}"
+          done < <(gh pr list --state open --json number,headRefName --jq --arg pkg "$PACKAGE" '.[] | select(.headRefName | startswith("sibling-update/\($pkg)-")) | [(.number | tostring), .headRefName] | @tsv')
+
           git checkout -b "$branch"
           git add -u
           body=$(printf 'Triggered instantly via repository_dispatch when %s published its own release,\nrather than waiting for the next scheduled Dependabot scan.' "$PACKAGE")
           git commit -m "build(deps): bump ${PACKAGE} to ${VERSION}" -m "$body"
-          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
           git push origin "$branch"
           pr_url=$(gh pr create --title "build(deps): bump ${PACKAGE} to ${VERSION}" --body "Automatic dependency bump triggered instantly by the ${PACKAGE} release." --base main --head "$branch")
           echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
@@ -152,14 +161,12 @@ jobs:
           for _attempt in $(seq 1 90); do
             pending=$(gh api "repos/${repo}/commits/${head_sha}/check-runs" --paginate --jq '[.check_runs[] | select(.conclusion == null)] | length')
             if [ "$pending" -eq 0 ]; then
-              failed=$(gh api "repos/${repo}/commits/${head_sha}/check-runs" --paginate --jq '[.check_runs[] | select(.conclusion != "success" and .conclusion != "skipped")] | length')
-              if [ "$failed" -gt 0 ]; then
-                echo "::error::CI checks failed on this sibling-update PR. Leaving it open for manual review."
-                exit 1
+              echo "Every check-run has concluded. Attempting a rebase-merge -- see this file's own header comment for why this doesn't pre-judge every check-run's own conclusion first."
+              if gh pr merge --rebase "$pr_url"; then
+                exit 0
               fi
-              echo "All CI checks passed. Rebase-merging."
-              gh pr merge --rebase "$pr_url"
-              exit 0
+              echo "::error::Rebase-merge was rejected -- a genuinely required check failed, or the PR is not otherwise mergeable. Leaving it open for manual review."
+              exit 1
             fi
             echo "Waiting for ${pending} CI check(s) to complete..."
             sleep 20
@@ -216,12 +223,7 @@ jobs:
               local _pending
               _pending=$(gh api "repos/${{ github.repository }}/commits/${head_sha}/check-runs" --paginate --jq '[.check_runs[] | select(.conclusion == null)] | length')
               if [ "$_pending" -eq 0 ]; then
-                local _failed
-                _failed=$(gh api "repos/${{ github.repository }}/commits/${head_sha}/check-runs" --paginate --jq '[.check_runs[] | select(.conclusion != "success" and .conclusion != "skipped")] | length')
-                if [ "$_failed" -gt 0 ]; then
-                  echo "CI failed on ${branch} -- leaving it open for review"
-                  return 0
-                fi
+                # See this file's own header comment: the merge attempt itself, not an enumeration of every check-run's conclusion, is what decides mergeability -- GitHub's required-status-checks list is the actual authority, and a non-required check-run failing here (a review bot, say) must never strand the PR the way it used to.
                 gh pr merge --rebase "$pr_url" || echo "::warning::merge of ${pr_url} failed -- leaving it open for the next heal-stranded-prs run to retry"
                 return 0
               fi
@@ -246,19 +248,19 @@ jobs:
 
             # A PR whose branch is merely behind main (no real conflict -- required-status-checks' own "strict" mode just needs a fresh commit re-tested against the current base) never becomes CONFLICTING and so was previously invisible to this job entirely, left to sit open indefinitely with nothing watching it once the bump-and-open-pr run that created it already exited. A plain branch update (no close/regenerate) is enough here -- the content is already correct, it just needs re-validating against the new base.
             if [ "$mergeable" = "MERGEABLE" ] && [ "$merge_state" = "BEHIND" ]; then
-              echo "PR #${number} (${branch}) is mergeable but behind main -- updating the branch instead of regenerating."
-              gh api --method PUT "repos/${{ github.repository }}/pulls/${number}/update-branch" >/dev/null
+              echo "PR #${number} (${branch}) is mergeable but behind main -- rebasing the branch onto main instead of regenerating."
+              # GitHub's own update-branch REST endpoint (what used to run here) only ever performs a MERGE update -- it has no rebase mode -- so it left a real merge commit on the PR branch. That silently broke every later merge attempt on a repo requiring linear history: hive's own required_linear_history ruleset, and its Staged-file guard, both reject a PR containing a merge commit outright -- confirmed directly against novus-power/hive#1600, which accumulated two such merge commits from repeated update-branch calls during a single day's release burst and could no longer be rebase-merged at all. A real local rebase, replaying this branch's own commit(s) onto the fetched main, keeps history linear the way bump-and-open-pr's own fresh branches already are by construction.
+              git fetch origin main "$branch"
+              git checkout -B "$branch" "origin/${branch}"
+              if ! git rebase origin/main; then
+                git rebase --abort
+                echo "::warning::rebase of ${branch} onto main failed unexpectedly despite GitHub reporting it MERGEABLE -- leaving PR #${number} open for manual resolution."
+                return 0
+              fi
+              git push --force origin "$branch"
               local pr_url head_sha
               pr_url=$(gh pr view "$number" --json url --jq '.url')
-              for _attempt in $(seq 1 20); do
-                local current_state
-                current_state=$(gh pr view "$number" --json mergeStateStatus --jq '.mergeStateStatus')
-                if [ "$current_state" != "BEHIND" ]; then
-                  break
-                fi
-                sleep 5
-              done
-              head_sha=$(gh pr view "$number" --json headRefOid --jq '.headRefOid')
+              head_sha=$(git rev-parse "$branch")
               wait_and_merge "$pr_url" "$head_sha" "$branch"
               return 0
             fi
