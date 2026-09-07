@@ -18,7 +18,9 @@ name: Sibling dependency instant update
 #
 # workspace switches the bump mechanism from `pnpm add` against a single root package.json (a standalone repo, one package.json at the root) to `pnpm update --recursive` against every package.json in the tree (a caller that is itself a pnpm workspace, where the dependency can be declared in any workspace member and never at the root at all). `update` never adds a dependency nowhere already declared, which is what makes it safe to run unconditionally across every workspace member rather than needing to know in advance which one, if any, declares the package.
 #
-# Neither job's setup-node step requests `cache: pnpm`: both jobs guard the actual `pnpm add`/`pnpm update` call behind an early exit (nothing to bump, or -- in heal-stranded-prs -- no stranded PR found at all, the common case on every ordinary push to main), so the pnpm store is frequently never populated. `actions/setup-node`'s pnpm cache resolves its save path from `pnpm store path` at setup time, before that store directory has necessarily been created by an actual install -- requesting the cache then fails the job's post-step with a path-validation error on every run that takes an early-exit branch, which is most of them for heal-stranded-prs specifically.
+# Neither job's setup-node step requests `cache: pnpm`: both jobs guard the actual `pnpm add`/`pnpm update` call behind an early exit (nothing to bump, or -- in discover-stranded-prs -- no stranded PR found at all, the common case on every ordinary push to main), so the pnpm store is frequently never populated. `actions/setup-node`'s pnpm cache resolves its save path from `pnpm store path` at setup time, before that store directory has necessarily been created by an actual install -- requesting the cache then fails the job's post-step with a path-validation error on every run that takes an early-exit branch, which is most of them for discover-stranded-prs specifically.
+#
+# Healing stranded PRs used to be one job that regenerated a branch and then waited out its full CI cycle before moving to the next candidate. Confirmed directly against novus-power/hive: once more than a couple of sibling-update PRs went stranded in the same window (a burst of same-day releases from one sibling package left several open at once), that per-PR CI wait routinely consumed the whole job's timeout budget on the first one or two candidates, and the run was cancelled before ever reaching the rest -- starving whichever PRs happened to sort later in the candidate list, which were consistently the oldest, most overdue ones, never the newest. Split into discover-stranded-prs (fast git operations only -- rebase or regenerate a branch, never wait on CI -- processing candidates oldest-first so the longest-stranded ones are handled first if the job is ever cut short) and wait-and-merge-healed-prs (one job per healed branch via a matrix strategy, so however many PRs got healed wait out their CI cycles in parallel rather than queued one behind another).
 
 on:
   workflow_call:
@@ -173,10 +175,13 @@ jobs:
           done
           echo "::warning::CI did not complete within 30 minutes. PR left open for manual merge." >&2
 
-  heal-stranded-prs:
+  discover-stranded-prs:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Fast git operations only, never a CI wait (that's wait-and-merge-healed-prs below) -- 20 minutes is headroom for a full backlog of stranded PRs each paying a cold `pnpm add`/`update` install (tens of seconds apiece, observed directly), not a budget for any of them to actually finish CI.
+    timeout-minutes: 20
+    outputs:
+      matrix: ${{ steps.regenerate.outputs.matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -193,7 +198,8 @@ jobs:
           app-id: ${{ inputs.app-id }}
           # See the same fallback's own comment in bump-and-open-pr above -- the actionlint "undefined" warning here is the identical false positive.
           private-key: ${{ secrets.app-private-key || secrets.AUTOMERGE_APP_PRIVATE_KEY }}
-      - name: Regenerate every conflicting sibling-update PR
+      - name: Rebase or regenerate every stranded sibling-update PR branch
+        id: regenerate
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           WORKSPACE: ${{ inputs.workspace }}
@@ -202,36 +208,10 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
 
-          # One PR's failure must never abort the rest of the batch -- this whole body previously ran under bash's default errexit (set -e, GitHub Actions' default for `run:` steps), so a single `gh pr create` failure (e.g. "a pull request for branch ... already exists", a genuine race against a concurrent dispatch or another heal-stranded-prs run touching the same branch) killed the entire step immediately, silently abandoning every other stranded PR still queued in this run. regenerate_pr is called inside an `if`, which suppresses errexit for that call, so a nonzero return here only ends this one PR's processing, not the loop.
+          # One PR's failure must never abort the rest of the batch -- this whole body previously ran under bash's default errexit (set -e, GitHub Actions' default for `run:` steps), so a single `gh pr create` failure (e.g. "a pull request for branch ... already exists", a genuine race against a concurrent dispatch or another discover-stranded-prs run touching the same branch) killed the entire step immediately, silently abandoning every other stranded PR still queued in this run. regenerate_pr is called inside an `if`, which suppresses errexit for that call, so a nonzero return here only ends this one PR's processing, not the loop.
           #
-          # Shared by both healing paths below: waits for a check-run to register against head_sha, then polls until every check-run concludes, then rebase-merges pr_url if they all passed.
-          wait_and_merge() {
-            local pr_url="$1" head_sha="$2" branch="$3"
-
-            for _attempt in $(seq 1 30); do
-              local found
-              # Any check-run, not one named a specific literal -- see the same guard's own comment in bump-and-open-pr above.
-              found=$(gh api "repos/${{ github.repository }}/commits/${head_sha}/check-runs" \
-                --jq '.check_runs | length')
-              if [ "$found" -gt 0 ]; then
-                break
-              fi
-              sleep 3
-            done
-
-            for _poll in $(seq 1 90); do
-              local _pending
-              _pending=$(gh api "repos/${{ github.repository }}/commits/${head_sha}/check-runs" --paginate --jq '[.check_runs[] | select(.conclusion == null)] | length')
-              if [ "$_pending" -eq 0 ]; then
-                # See this file's own header comment: the merge attempt itself, not an enumeration of every check-run's conclusion, is what decides mergeability -- GitHub's required-status-checks list is the actual authority, and a non-required check-run failing here (a review bot, say) must never strand the PR the way it used to.
-                gh pr merge --rebase "$pr_url" || echo "::warning::merge of ${pr_url} failed -- leaving it open for the next heal-stranded-prs run to retry"
-                return 0
-              fi
-              echo "Waiting for ${_pending} CI check(s) to complete on ${branch}..."
-              sleep 20
-            done
-            echo "::warning::CI did not complete within 30 minutes for ${branch}. PR left open for manual merge or a later retry."
-          }
+          # Every healed branch (rebased or regenerated) is recorded here rather than merged inline -- wait-and-merge-healed-prs picks each one up as its own parallel matrix job. Declared before regenerate_pr so the function (a plain shell function, sharing this script's global scope) can append to it directly.
+          matrix_entries=()
 
           regenerate_pr() {
             local number="$1" branch="$2"
@@ -261,7 +241,7 @@ jobs:
               local pr_url head_sha
               pr_url=$(gh pr view "$number" --json url --jq '.url')
               head_sha=$(git rev-parse "$branch")
-              wait_and_merge "$pr_url" "$head_sha" "$branch"
+              matrix_entries+=("$(jq -n -c --arg pr "$pr_url" --arg sha "$head_sha" --arg branch "$branch" '{pr_url:$pr, head_sha:$sha, branch:$branch}')")
               return 0
             fi
 
@@ -320,7 +300,7 @@ jobs:
             if ! pr_url=$(gh pr create --title "build(deps): bump ${package} to ${version}" \
               --body "Regenerated automatically after the original PR fell behind main." \
               --base main --head "$branch" 2>&1); then
-              # A PR for this exact branch can already exist if a concurrent dispatch (a fresh publish, or another heal-stranded-prs run) recreated it between this loop reading its candidate list and this iteration reaching gh pr create. The push above already landed on the branch either way, so reuse whatever PR now points at it instead of treating this as fatal.
+              # A PR for this exact branch can already exist if a concurrent dispatch (a fresh publish, or another discover-stranded-prs run) recreated it between this loop reading its candidate list and this iteration reaching gh pr create. The push above already landed on the branch either way, so reuse whatever PR now points at it instead of treating this as fatal.
               local existing
               existing=$(gh pr list --state open --head "$branch" --json url --jq '.[0].url // empty')
               if [ -z "$existing" ]; then
@@ -333,20 +313,71 @@ jobs:
 
             local head_sha
             head_sha=$(git rev-parse HEAD)
-            wait_and_merge "$pr_url" "$head_sha" "$branch"
+            matrix_entries+=("$(jq -n -c --arg pr "$pr_url" --arg sha "$head_sha" --arg branch "$branch" '{pr_url:$pr, head_sha:$sha, branch:$branch}')")
           }
 
-          candidates=$(gh pr list --state open --json number,headRefName \
-            --jq '[.[] | select(.headRefName | startswith("sibling-update/"))] | .[]')
-          if [ -z "$candidates" ]; then
+          # Oldest-created first: whichever candidates this run doesn't get to (the loop itself is fast, but a full pnpm install per regenerated branch still adds up across a large backlog) are the newest ones, which have had the least time to matter -- never the longest-stranded PR, which is exactly the one a future run must not keep losing to newer arrivals.
+          candidates=$(gh pr list --state open --json number,headRefName,createdAt \
+            --jq '[.[] | select(.headRefName | startswith("sibling-update/"))] | sort_by(.createdAt) | .[]')
+          if [ -n "$candidates" ]; then
+            while IFS= read -r entry; do
+              number=$(echo "$entry" | jq -r '.number')
+              branch=$(echo "$entry" | jq -r '.headRefName')
+              if ! regenerate_pr "$number" "$branch"; then
+                echo "::warning::Failed to regenerate PR #${number} (${branch}) -- continuing with the rest of the batch."
+              fi
+            done < <(echo "$candidates" | jq -c '.')
+          else
             echo "No open sibling-update PRs found."
-            exit 0
           fi
 
-          echo "$candidates" | jq -c '.' | while read -r entry; do
-            number=$(echo "$entry" | jq -r '.number')
-            branch=$(echo "$entry" | jq -r '.headRefName')
-            if ! regenerate_pr "$number" "$branch"; then
-              echo "::warning::Failed to regenerate PR #${number} (${branch}) -- continuing with the rest of the batch."
+          matrix_json=$(printf '%s\n' "${matrix_entries[@]}" | jq -s -c '.')
+          echo "$(echo "$matrix_json" | jq 'length') branch(es) healed and awaiting a CI wait + merge."
+          echo "matrix=${matrix_json}" >> "$GITHUB_OUTPUT"
+
+  wait-and-merge-healed-prs:
+    needs: discover-stranded-prs
+    if: needs.discover-stranded-prs.outputs.matrix != '[]' && needs.discover-stranded-prs.outputs.matrix != ''
+    runs-on: ubuntu-latest
+    # 30 minutes of polling (below) plus setup headroom -- matches bump-and-open-pr's own single-PR merge job, now run once per healed branch instead of serialised behind every other candidate in discover-stranded-prs.
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.discover-stranded-prs.outputs.matrix) }}
+    steps:
+      - name: Generate a token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ inputs.app-id }}
+          # See the same fallback's own comment in bump-and-open-pr above -- the actionlint "undefined" warning here is the identical false positive.
+          private-key: ${{ secrets.app-private-key || secrets.AUTOMERGE_APP_PRIVATE_KEY }}
+      - name: Wait for CI on ${{ matrix.branch }}, then rebase-merge
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          pr_url="${{ matrix.pr_url }}"
+          head_sha="${{ matrix.head_sha }}"
+          branch="${{ matrix.branch }}"
+
+          # Any check-run, not one named a specific literal -- see the same guard's own comment in bump-and-open-pr above.
+          for _attempt in $(seq 1 30); do
+            found=$(gh api "repos/${{ github.repository }}/commits/${head_sha}/check-runs" --jq '.check_runs | length')
+            if [ "$found" -gt 0 ]; then
+              break
             fi
+            sleep 3
           done
+
+          for _poll in $(seq 1 90); do
+            pending=$(gh api "repos/${{ github.repository }}/commits/${head_sha}/check-runs" --paginate --jq '[.check_runs[] | select(.conclusion == null)] | length')
+            if [ "$pending" -eq 0 ]; then
+              # See this file's own header comment: the merge attempt itself, not an enumeration of every check-run's conclusion, is what decides mergeability -- GitHub's required-status-checks list is the actual authority, and a non-required check-run failing here (a review bot, say) must never strand the PR the way it used to.
+              gh pr merge --rebase "$pr_url" || echo "::warning::merge of ${pr_url} failed -- leaving it open for the next discover-stranded-prs run to retry"
+              exit 0
+            fi
+            echo "Waiting for ${pending} CI check(s) to complete on ${branch}..."
+            sleep 20
+          done
+          echo "::warning::CI did not complete within 30 minutes for ${branch}. PR left open for manual merge or a later retry."
