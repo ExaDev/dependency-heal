@@ -356,10 +356,14 @@ jobs:
       - name: Wait for CI on ${{ matrix.branch }}, then rebase-merge
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          # Bound through env, never spliced straight into the script below: discover-stranded-prs' matrix.branch traces back to a PR's own headRefName, which git accepts containing shell metacharacters -- a `${{ matrix.branch }}` interpolated directly into `run:` would splice that text into the script before bash ever parses it, letting a crafted branch name execute arbitrary commands with this job's write-capable App token. An env entry passes the value as data, not script text.
+          PR_URL: ${{ matrix.pr_url }}
+          HEAD_SHA: ${{ matrix.head_sha }}
+          BRANCH: ${{ matrix.branch }}
         run: |
-          pr_url="${{ matrix.pr_url }}"
-          head_sha="${{ matrix.head_sha }}"
-          branch="${{ matrix.branch }}"
+          pr_url="$PR_URL"
+          head_sha="$HEAD_SHA"
+          branch="$BRANCH"
 
           # Any check-run, not one named a specific literal -- see the same guard's own comment in bump-and-open-pr above.
           for _attempt in $(seq 1 30); do
