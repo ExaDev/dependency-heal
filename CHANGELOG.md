@@ -1,3 +1,9 @@
+## [1.0.1](https://github.com/ExaDev/dependency-heal/compare/v1.0.0...v1.0.1) (2026-09-07)
+
+### Bug Fixes
+
+- stop stranding sibling-update PRs on non-required checks, stale duplicates, and merge commits ([3b81d5d](https://github.com/ExaDev/dependency-heal/commit/3b81d5d46a8464b761592f293df8b09776245c9d))
+
 ## 1.0.0 (2026-09-04)
 
 ### Bug Fixes
