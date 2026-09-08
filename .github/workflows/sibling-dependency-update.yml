@@ -47,6 +47,10 @@ jobs:
     if: github.event_name == 'repository_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    # Scoped per package (concurrency groups are already implicitly scoped per repository by GitHub, so this never collides across caller repos): several releases of the same sibling package publishing within seconds of each other each fire their own repository_dispatch event, and without this, GitHub runs one bump-and-open-pr job per event fully in parallel. The "close any other open sibling-update/<package>-* PR before opening this one" step later in this job reads a live snapshot of currently-open PRs -- under real concurrency, every run in the burst takes that snapshot before any of the others have created their own PR, so none of them see anything to close and all survive side by side, exactly the symptom the close-then-create step exists to prevent. Confirmed directly against novus-power/hive: a burst of pdf-codec releases fired nine repository_dispatch-triggered runs within 8 seconds of each other, and all nine PRs survived. GitHub's concurrency queueing doesn't fully serialize the burst either, though: only one run per group may be queued behind the currently in-progress one at a time, and each new arrival replaces (cancels) whatever was queued before it -- cancel-in-progress: false only protects the run actually executing, never a merely-queued one. So a same-package burst collapses to at most two real executions (whichever run was already in-progress when the burst started, and whichever was last-queued once that one finishes), not N sequential ones -- which is what we actually want here: every run in between would have opened, then immediately closed, its own now-superseded PR for nothing. Either way, the run that does execute always has an up-to-date snapshot of what the previous surviving run actually created, restoring the close-then-create step's own invariant.
+    concurrency:
+      group: sibling-update-bump-${{ github.event.client_payload.package }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
