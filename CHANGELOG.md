@@ -1,3 +1,9 @@
+## [1.0.3](https://github.com/ExaDev/dependency-heal/compare/v1.0.2...v1.0.3) (2026-09-08)
+
+### Bug Fixes
+
+- serialize bump-and-open-pr per package to close a burst-supersede race ([5834e53](https://github.com/ExaDev/dependency-heal/commit/5834e53fff85c68741420ca1e1bad33a7aafdc9f))
+
 ## [1.0.2](https://github.com/ExaDev/dependency-heal/compare/v1.0.1...v1.0.2) (2026-09-07)
 
 ### Bug Fixes
