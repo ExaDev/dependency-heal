@@ -259,7 +259,32 @@ jobs:
             local version="${package_version##*-}"
             echo "Regenerating stranded PR #${number} (${branch}) for ${package}@${version}"
 
+            # A separately-dispatched, correctly-functioning bump-and-open-pr run for a newer release of this same package can already have its own open PR by the time this stranded PR reaches regeneration -- bump-and-open-pr's own close-then-create step only ever runs at ITS OWN creation time, so it has no way to notice a stranded PR that survives (mergeable, just behind main) until a later discover-stranded-prs sweep regenerates it here. This path never checked for that. Confirmed directly against novus-power/hive: PR #1926 (documents.js@7.14.0, regenerated via this path) and PR #1927 (documents.js@7.15.0, opened directly by bump-and-open-pr) coexisted side by side with nothing to close either. Checked here, before doing anything else: any other open sibling-update/<package>-* PR at or above this branch's own version means this regeneration is itself already superseded -- close the stranded PR outright, leave the newer one alone, and skip regenerating. A strictly older other PR is the reverse case bump-and-open-pr's own close-then-create step already handles when it runs first; mirrored here too so whichever path finishes last is the one that tidies up the other.
+            local other_number="" other_branch="" other_version=""
+            # shellcheck disable=SC2016 # $pkg in the --jq program below is a jq variable bound by --arg, not a shell one -- single-quoting the jq program is correct, not a mistake.
+            while IFS=$'\t' read -r on ob; do
+              [ -z "$on" ] && continue
+              [ "$on" = "$number" ] && continue
+              other_number="$on"
+              other_branch="$ob"
+              other_version="${ob##*-}"
+              break
+            done < <(gh pr list --state open --json number,headRefName --jq --arg pkg "$package" '.[] | select(.headRefName | startswith("sibling-update/\($pkg)-")) | [(.number | tostring), .headRefName] | @tsv')
+
+            if [ -n "$other_number" ] && [ "$version" = "$(printf '%s\n%s\n' "$version" "$other_version" | sort -V | head -n1)" ] && [ "$version" != "$other_version" ]; then
+              echo "PR #${other_number} (${other_branch}) already covers a newer ${package} release -- closing this stranded PR instead of regenerating it."
+              gh pr close "$number" --comment "Superseded by #${other_number}, which already covers a newer ${package} release." || true
+              git push origin --delete "$branch" || echo "::warning::could not delete superseded branch ${branch} on origin"
+              return 0
+            fi
+
             gh pr close "$number" --comment "Regenerating -- this branch fell behind main and could no longer auto-merge." || true
+
+            if [ -n "$other_number" ]; then
+              echo "Closing #${other_number} (${other_branch}), superseded by this regeneration."
+              gh pr close "$other_number" --comment "Superseded by a regenerated ${package} bump to ${version}." || true
+              git push origin --delete "$other_branch" || echo "::warning::could not delete superseded branch ${other_branch}"
+            fi
 
             git fetch origin main
             git checkout -B "$branch" origin/main
