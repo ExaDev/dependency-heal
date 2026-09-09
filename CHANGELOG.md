@@ -1,3 +1,9 @@
+## [1.0.4](https://github.com/ExaDev/dependency-heal/compare/v1.0.3...v1.0.4) (2026-09-09)
+
+### Bug Fixes
+
+- close a superseding or superseded sibling PR before regenerating ([4fe2211](https://github.com/ExaDev/dependency-heal/commit/4fe2211df6ca561f02744782e21b6a1bc42c3cc2)), closes [#1926](https://github.com/ExaDev/dependency-heal/issues/1926) [#1927](https://github.com/ExaDev/dependency-heal/issues/1927)
+
 ## [1.0.3](https://github.com/ExaDev/dependency-heal/compare/v1.0.2...v1.0.3) (2026-09-08)
 
 ### Bug Fixes
