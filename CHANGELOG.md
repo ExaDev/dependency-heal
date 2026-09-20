@@ -1,3 +1,9 @@
+## [1.0.5](https://github.com/ExaDev/dependency-heal/compare/v1.0.4...v1.0.5) (2026-09-20)
+
+### Bug Fixes
+
+- **workflow:** retry the bump install while a fresh release reaches the registry ([bb9aee6](https://github.com/ExaDev/dependency-heal/commit/bb9aee6577ef78d78e1f3f7825fbdba96d7bb090))
+
 ## [1.0.4](https://github.com/ExaDev/dependency-heal/compare/v1.0.3...v1.0.4) (2026-09-09)
 
 ### Bug Fixes
