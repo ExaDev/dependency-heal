@@ -65,6 +65,9 @@ jobs:
           PACKAGE: ${{ github.event.client_payload.package }}
           VERSION: ${{ github.event.client_payload.version }}
           WORKSPACE: ${{ inputs.workspace }}
+          # The dispatch is sent the moment the sibling's own release job publishes, and the registry's metadata (which pnpm resolves against) can trail a publish by a short while, so the first attempt to install a brand-new version can fail with "the latest release is <previous version>". Six minutes of retries covers the metadata cache's lifetime with room to spare.
+          INSTALL_ATTEMPTS: "12"
+          INSTALL_RETRY_DELAY_SECONDS: "30"
         run: |
           # Idempotence guard, checked before the add: the checkout is the default branch, so main's current spec for the package is the floor, and a named version at or below it is a no-op -- equal is a replay of an already-merged bump, below is a backport published after a newer release -- because re-running pnpm add in either case still produces a diff, and the PR that diff opens sails through the wait-for-green gate as a downgrade. Compared on the bare version (range caret stripped), the spec form pnpm add itself writes; dependencies merges last so a dual-table pin resolves to the spec pnpm add will actually rewrite. A caller with no declared dependency on the package at all -- floor empty -- is nothing to bump, not an add: see the workspace input's own doc comment above.
           #
@@ -88,10 +91,22 @@ jobs:
             echo "main already holds ${PACKAGE}@${floor} -- ${VERSION} is at or below it. Nothing to bump."
             exit 0
           fi
+          install_with_retry() {
+            attempt=1
+            until "$@"; do
+              if [ "$attempt" -ge "$INSTALL_ATTEMPTS" ]; then
+                echo "::error::${PACKAGE}@${VERSION} could not be installed after ${INSTALL_ATTEMPTS} attempts."
+                return 1
+              fi
+              echo "::notice::Attempt ${attempt} of ${INSTALL_ATTEMPTS} to install ${PACKAGE}@${VERSION} failed, retrying in ${INSTALL_RETRY_DELAY_SECONDS}s."
+              sleep "$INSTALL_RETRY_DELAY_SECONDS"
+              attempt=$((attempt + 1))
+            done
+          }
           if [ "$WORKSPACE" = "true" ]; then
-            pnpm update "$PACKAGE@$VERSION" --recursive
+            install_with_retry pnpm update "$PACKAGE@$VERSION" --recursive
           else
-            pnpm add "$PACKAGE@$VERSION"
+            install_with_retry pnpm add "$PACKAGE@$VERSION"
           fi
       - name: Check whether anything actually changed
         id: diff
