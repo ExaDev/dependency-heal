@@ -47,10 +47,11 @@ jobs:
     if: github.event_name == 'repository_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 35
-    # Scoped per package (concurrency groups are already implicitly scoped per repository by GitHub, so this never collides across caller repos): several releases of the same sibling package publishing within seconds of each other each fire their own repository_dispatch event, and without this, GitHub runs one bump-and-open-pr job per event fully in parallel. The "close any other open sibling-update/<package>-* PR before opening this one" step later in this job reads a live snapshot of currently-open PRs -- under real concurrency, every run in the burst takes that snapshot before any of the others have created their own PR, so none of them see anything to close and all survive side by side, exactly the symptom the close-then-create step exists to prevent. Confirmed directly against novus-power/hive: a burst of pdf-codec releases fired nine repository_dispatch-triggered runs within 8 seconds of each other, and all nine PRs survived. GitHub's concurrency queueing doesn't fully serialize the burst either, though: only one run per group may be queued behind the currently in-progress one at a time, and each new arrival replaces (cancels) whatever was queued before it -- cancel-in-progress: false only protects the run actually executing, never a merely-queued one. So a same-package burst collapses to at most two real executions (whichever run was already in-progress when the burst started, and whichever was last-queued once that one finishes), not N sequential ones -- which is what we actually want here: every run in between would have opened, then immediately closed, its own now-superseded PR for nothing. Either way, the run that does execute always has an up-to-date snapshot of what the previous surviving run actually created, restoring the close-then-create step's own invariant.
-    concurrency:
-      group: sibling-update-bump-${{ github.event.client_payload.package }}
-      cancel-in-progress: false
+    # Several releases of the same sibling package publishing within seconds of each other each fire their own repository_dispatch event, and GitHub runs one bump-and-open-pr job per event fully in parallel. The "close any other open sibling-update/<package>-* PR before opening this one" step later in this job reads a live snapshot of currently-open PRs -- under real concurrency, every run in the burst takes that snapshot before any of the others have created their own PR, so none of them see anything to close and all survive side by side, exactly the symptom the close-then-create step exists to prevent. Confirmed directly against novus-power/hive: a burst of pdf-codec releases fired nine repository_dispatch-triggered runs within 8 seconds of each other, and all nine PRs survived.
+    #
+    # This job used to rely on a per-package `concurrency:` group here for that, on the documented (but wrong) assumption that GitHub's queueing collapses a same-package burst to at most two real executions. Confirmed directly against novus-power/hive, again, that this does not hold: a burst of nine documents.js repository_dispatch events within about four seconds produced nine independent bump-and-open-pr job runs, none queued and none cancelled, several genuinely overlapping in wall-clock execution (ExaDev/dependency-heal#15 has the run ids and timestamps). Whatever the platform-level explanation, a `concurrency:` group on a job inside a workflow invoked via workflow_call, from separate top-level runs of each caller's own thin stub, is not a mutex this job can rely on.
+    #
+    # The close-then-create critical section below is instead guarded by a real mutex: atomic git ref creation. `POST /repos/{owner}/{repo}/git/refs` fails outright if the named ref already exists, which GitHub's own object store enforces as a genuine compare-and-swap regardless of how many job runs call it at once, unlike the concurrency group above, which could silently let two runs both believe they hold it. `acquire_package_lock`/`release_package_lock` (duplicated in discover-stranded-prs' regenerate_pr below, which reads and mutates the identical "at most one open sibling-update/<package>-* PR" invariant and can otherwise race against a concurrently-dispatched run of this job for the same package) create and delete a `refs/sibling-update-locks/<package>` ref as the lock. A run that cannot acquire it within 120 seconds steals it outright, on the assumption that anything genuinely still holding it would have finished this same few-second critical section long before then, and a crashed run's stale lock must not strand every later release of the same package forever.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -132,11 +133,41 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PACKAGE: ${{ github.event.client_payload.package }}
           VERSION: ${{ github.event.client_payload.version }}
+          REPO: ${{ github.repository }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
           branch="sibling-update/${PACKAGE}-${VERSION}"
+
+          # See this job's own header comment for why this is a real mutex rather than the concurrency group it replaced. Duplicated verbatim in discover-stranded-prs' regenerate_pr below, which needs the identical lock.
+          acquire_package_lock() {
+            local package="$1" repo="$2"
+            local lock_ref
+            lock_ref="refs/sibling-update-locks/$(printf '%s' "$package" | tr -c 'A-Za-z0-9._-' '-')"
+            local sha
+            sha=$(git rev-parse HEAD)
+            local _attempt
+            for _attempt in $(seq 1 40); do
+              if gh api "repos/${repo}/git/refs" -f ref="$lock_ref" -f sha="$sha" >/dev/null 2>&1; then
+                echo "$lock_ref"
+                return 0
+              fi
+              sleep 3
+            done
+            echo "::warning::could not acquire the ${package} sibling-update lock within 120s, stealing it since a prior run holding it that long has most likely crashed before releasing it." >&2
+            gh api -X DELETE "repos/${repo}/git/refs/${lock_ref#refs/}" >/dev/null 2>&1 || true
+            gh api "repos/${repo}/git/refs" -f ref="$lock_ref" -f sha="$sha" >/dev/null 2>&1 || true
+            echo "$lock_ref"
+          }
+          release_package_lock() {
+            local lock_ref="$1" repo="$2"
+            [ -z "$lock_ref" ] && return 0
+            gh api -X DELETE "repos/${repo}/git/refs/${lock_ref#refs/}" >/dev/null 2>&1 || true
+          }
+
+          lock_ref=$(acquire_package_lock "$PACKAGE" "$REPO")
+          trap 'release_package_lock "$lock_ref" "$REPO"' EXIT
 
           # A burst of releases from the same sibling package (several patch versions publishing in quick succession, each firing its own repository_dispatch) previously left one open PR per version sitting side by side forever -- nothing here ever closed an older one once a newer release superseded it. Any other open sibling-update/<PACKAGE>-* PR at this point can only be for a strictly older version of this exact package: the idempotence guard above already exited early for a dispatched version at or below what main currently holds, so an open PR here was itself opened for something between that floor and this new version. Close it and delete its branch before opening the new one, mirroring heal-stranded-prs' own regenerate_pr close-then-recreate pattern below.
           # shellcheck disable=SC2016 # $pkg in the --jq program below is a jq variable bound by --arg, not a shell one -- single-quoting the jq program is correct, not a mistake.
@@ -222,10 +253,37 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           WORKSPACE: ${{ inputs.workspace }}
+          REPO: ${{ github.repository }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+
+          # See bump-and-open-pr's own header comment and its identical acquire_package_lock/release_package_lock pair for why this is a real mutex: regenerate_pr below reads and mutates the identical "at most one open sibling-update/<package>-* PR" invariant, and can otherwise race against a concurrently-dispatched bump-and-open-pr run for the same package.
+          acquire_package_lock() {
+            local package="$1" repo="$2"
+            local lock_ref
+            lock_ref="refs/sibling-update-locks/$(printf '%s' "$package" | tr -c 'A-Za-z0-9._-' '-')"
+            local sha
+            sha=$(git rev-parse HEAD)
+            local _attempt
+            for _attempt in $(seq 1 40); do
+              if gh api "repos/${repo}/git/refs" -f ref="$lock_ref" -f sha="$sha" >/dev/null 2>&1; then
+                echo "$lock_ref"
+                return 0
+              fi
+              sleep 3
+            done
+            echo "::warning::could not acquire the ${package} sibling-update lock within 120s, stealing it since a prior run holding it that long has most likely crashed before releasing it." >&2
+            gh api -X DELETE "repos/${repo}/git/refs/${lock_ref#refs/}" >/dev/null 2>&1 || true
+            gh api "repos/${repo}/git/refs" -f ref="$lock_ref" -f sha="$sha" >/dev/null 2>&1 || true
+            echo "$lock_ref"
+          }
+          release_package_lock() {
+            local lock_ref="$1" repo="$2"
+            [ -z "$lock_ref" ] && return 0
+            gh api -X DELETE "repos/${repo}/git/refs/${lock_ref#refs/}" >/dev/null 2>&1 || true
+          }
 
           # One PR's failure must never abort the rest of the batch -- this whole body previously ran under bash's default errexit (set -e, GitHub Actions' default for `run:` steps), so a single `gh pr create` failure (e.g. "a pull request for branch ... already exists", a genuine race against a concurrent dispatch or another discover-stranded-prs run touching the same branch) killed the entire step immediately, silently abandoning every other stranded PR still queued in this run. regenerate_pr is called inside an `if`, which suppresses errexit for that call, so a nonzero return here only ends this one PR's processing, not the loop.
           #
@@ -275,6 +333,12 @@ jobs:
             echo "Regenerating stranded PR #${number} (${branch}) for ${package}@${version}"
 
             # A separately-dispatched, correctly-functioning bump-and-open-pr run for a newer release of this same package can already have its own open PR by the time this stranded PR reaches regeneration -- bump-and-open-pr's own close-then-create step only ever runs at ITS OWN creation time, so it has no way to notice a stranded PR that survives (mergeable, just behind main) until a later discover-stranded-prs sweep regenerates it here. This path never checked for that. Confirmed directly against novus-power/hive: PR #1926 (documents.js@7.14.0, regenerated via this path) and PR #1927 (documents.js@7.15.0, opened directly by bump-and-open-pr) coexisted side by side with nothing to close either. Checked here, before doing anything else: any other open sibling-update/<package>-* PR at or above this branch's own version means this regeneration is itself already superseded -- close the stranded PR outright, leave the newer one alone, and skip regenerating. A strictly older other PR is the reverse case bump-and-open-pr's own close-then-create step already handles when it runs first; mirrored here too so whichever path finishes last is the one that tidies up the other.
+            #
+            # Locked from here through the function's own end (a RETURN trap, not a manual release call at every one of this function's several return points below, is what makes that hold regardless of which one actually fires): every path from here on reads the current open-PR snapshot for this exact package and then acts on it, the identical critical section bump-and-open-pr's own lock guards.
+            local lock_ref
+            lock_ref=$(acquire_package_lock "$package" "$REPO")
+            trap 'release_package_lock "$lock_ref" "$REPO"' RETURN
+
             local other_number="" other_branch="" other_version=""
             # shellcheck disable=SC2016 # $pkg in the --jq program below is a jq variable bound by --arg, not a shell one -- single-quoting the jq program is correct, not a mistake.
             while IFS=$'\t' read -r on ob; do
