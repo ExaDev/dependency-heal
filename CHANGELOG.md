@@ -1,3 +1,9 @@
+## [1.0.6](https://github.com/ExaDev/dependency-heal/compare/v1.0.5...v1.0.6) (2026-09-28)
+
+### Bug Fixes
+
+- replace the per-package concurrency group with a real git-ref mutex ([9e9d4cf](https://github.com/ExaDev/dependency-heal/commit/9e9d4cf04ae993e5a203680b795c4125012418e0)), closes [ExaDev/dependency-heal#15](https://github.com/ExaDev/dependency-heal/issues/15)
+
 ## [1.0.5](https://github.com/ExaDev/dependency-heal/compare/v1.0.4...v1.0.5) (2026-09-20)
 
 ### Bug Fixes
