@@ -1,3 +1,9 @@
+## [1.0.7](https://github.com/ExaDev/dependency-heal/compare/v1.0.6...v1.0.7) (2026-09-28)
+
+### Bug Fixes
+
+- gh pr list has no --arg flag, so close-then-create never ran ([e3b2bd7](https://github.com/ExaDev/dependency-heal/commit/e3b2bd78a36374eed78769a65b897c00e91c919e))
+
 ## [1.0.6](https://github.com/ExaDev/dependency-heal/compare/v1.0.5...v1.0.6) (2026-09-28)
 
 ### Bug Fixes
