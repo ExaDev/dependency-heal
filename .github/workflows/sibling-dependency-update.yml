@@ -170,12 +170,13 @@ jobs:
           trap 'release_package_lock "$lock_ref" "$REPO"' EXIT
 
           # A burst of releases from the same sibling package (several patch versions publishing in quick succession, each firing its own repository_dispatch) previously left one open PR per version sitting side by side forever -- nothing here ever closed an older one once a newer release superseded it. Any other open sibling-update/<PACKAGE>-* PR at this point can only be for a strictly older version of this exact package: the idempotence guard above already exited early for a dispatched version at or below what main currently holds, so an open PR here was itself opened for something between that floor and this new version. Close it and delete its branch before opening the new one, mirroring heal-stranded-prs' own regenerate_pr close-then-recreate pattern below.
-          # shellcheck disable=SC2016 # $pkg in the --jq program below is a jq variable bound by --arg, not a shell one -- single-quoting the jq program is correct, not a mistake.
+          #
+          # `gh pr list` has no `--arg` flag at all (confirmed against its own --help; only `gh api` supports one), so passing one made every invocation of this line fail outright with "unknown arguments", silently swallowed by the while/process-substitution around it, so this step has never actually closed a single stale PR since it was written. `env.PACKAGE` reads the same value from this step's own real `PACKAGE` environment variable instead, which jq can always see without needing a separate binding flag.
           while IFS=$'\t' read -r stale_number stale_branch; do
             [ -z "$stale_number" ] && continue
             gh pr close "$stale_number" --comment "Superseded by a newer ${PACKAGE} release -- this dispatch bumps to ${VERSION}." || true
             git push origin --delete "$stale_branch" || echo "::warning::could not delete superseded branch ${stale_branch}"
-          done < <(gh pr list --state open --json number,headRefName --jq --arg pkg "$PACKAGE" '.[] | select(.headRefName | startswith("sibling-update/\($pkg)-")) | [(.number | tostring), .headRefName] | @tsv')
+          done < <(gh pr list --state open --json number,headRefName --jq '.[] | select(.headRefName | startswith("sibling-update/" + env.PACKAGE + "-")) | [(.number | tostring), .headRefName] | @tsv')
 
           git checkout -b "$branch"
           git add -u
@@ -328,7 +329,9 @@ jobs:
             fi
 
             local package_version="${branch#sibling-update/}"
-            local package="${package_version%-*}"
+            # Exported (local -x), not a plain local, under its own distinct name: the gh pr list --jq call further below reads this back via env.REGENERATE_PACKAGE, since gh pr list has no --arg flag at all, per that call's own comment. Kept separate from bump-and-open-pr's own PACKAGE (a different job, no actual collision, but a shared name across two semantically different values would read as one).
+            local -x REGENERATE_PACKAGE="${package_version%-*}"
+            local package="$REGENERATE_PACKAGE"
             local version="${package_version##*-}"
             echo "Regenerating stranded PR #${number} (${branch}) for ${package}@${version}"
 
@@ -340,7 +343,6 @@ jobs:
             trap 'release_package_lock "$lock_ref" "$REPO"' RETURN
 
             local other_number="" other_branch="" other_version=""
-            # shellcheck disable=SC2016 # $pkg in the --jq program below is a jq variable bound by --arg, not a shell one -- single-quoting the jq program is correct, not a mistake.
             while IFS=$'\t' read -r on ob; do
               [ -z "$on" ] && continue
               [ "$on" = "$number" ] && continue
@@ -348,7 +350,7 @@ jobs:
               other_branch="$ob"
               other_version="${ob##*-}"
               break
-            done < <(gh pr list --state open --json number,headRefName --jq --arg pkg "$package" '.[] | select(.headRefName | startswith("sibling-update/\($pkg)-")) | [(.number | tostring), .headRefName] | @tsv')
+            done < <(gh pr list --state open --json number,headRefName --jq '.[] | select(.headRefName | startswith("sibling-update/" + env.REGENERATE_PACKAGE + "-")) | [(.number | tostring), .headRefName] | @tsv')
 
             if [ -n "$other_number" ] && [ "$version" = "$(printf '%s\n%s\n' "$version" "$other_version" | sort -V | head -n1)" ] && [ "$version" != "$other_version" ]; then
               echo "PR #${other_number} (${other_branch}) already covers a newer ${package} release -- closing this stranded PR instead of regenerating it."
