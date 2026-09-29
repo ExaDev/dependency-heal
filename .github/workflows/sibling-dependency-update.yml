@@ -57,7 +57,7 @@ jobs:
         with:
           # actions/checkout defaults persist-credentials to true, which writes the default GITHUB_TOKEN into a git http.extraheader entry that takes precedence over the URL-embedded App token this workflow sets later (git remote set-url origin "https://x-access-token:${GH_TOKEN}@...") -- without this, every `git push` below silently authenticates as github-actions[bot], not the App, contradicting this file's own header comment and breaking in any caller repo with push restrictions scoped to the App's bypass identity.
           persist-credentials: false
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
@@ -121,7 +121,7 @@ jobs:
       - name: Generate a token for the branch push and PR
         if: steps.diff.outputs.changed == 'true'
         id: app-token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ inputs.app-id }}
           # actionlint flags secrets.AUTOMERGE_APP_PRIVATE_KEY here as undefined, since it isn't declared under workflow_call.secrets above -- a false positive: GitHub's own reusable-workflow docs confirm a secret inherited via `secrets: inherit` at the call site stays referenceable by its original name even when not declared, which a caller relying on it depends on for exactly this secret.
@@ -238,13 +238,13 @@ jobs:
         with:
           # See the same option's own comment in bump-and-open-pr above -- identical reasoning, this job also pushes/force-pushes with a minted App token.
           persist-credentials: false
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
       - name: Generate a token
         id: app-token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ inputs.app-id }}
           # See the same fallback's own comment in bump-and-open-pr above -- the actionlint "undefined" warning here is the identical false positive.
@@ -458,7 +458,7 @@ jobs:
     steps:
       - name: Generate a token
         id: app-token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ inputs.app-id }}
           # See the same fallback's own comment in bump-and-open-pr above -- the actionlint "undefined" warning here is the identical false positive.
