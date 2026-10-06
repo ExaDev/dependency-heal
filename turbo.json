@@ -10,5 +10,6 @@
     "format:check": {
       "outputs": []
     }
-  }
+  },
+  "agentGuidance": false
 }
