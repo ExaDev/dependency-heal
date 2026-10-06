@@ -1,3 +1,5 @@
+## [1.0.8](https://github.com/ExaDev/dependency-heal/compare/v1.0.7...v1.0.8) (2026-10-06)
+
 ## [1.0.7](https://github.com/ExaDev/dependency-heal/compare/v1.0.6...v1.0.7) (2026-09-28)
 
 ### Bug Fixes
