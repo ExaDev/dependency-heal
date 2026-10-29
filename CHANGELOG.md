@@ -1,3 +1,9 @@
+## [1.0.10](https://github.com/ExaDev/dependency-heal/compare/v1.0.9...v1.0.10) (2026-10-29)
+
+### Documentation
+
+- add the standard badge row to the README ([f781ac7](https://github.com/ExaDev/dependency-heal/commit/f781ac792b8e8bce19c18a3a34b1e0d07933a9f3))
+
 ## [1.0.9](https://github.com/ExaDev/dependency-heal/compare/v1.0.8...v1.0.9) (2026-10-29)
 
 ### Bug Fixes
