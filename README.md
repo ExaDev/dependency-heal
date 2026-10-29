@@ -1,5 +1,7 @@
 # dependency-heal
 
+[![GitHub](https://img.shields.io/badge/GitHub-181717?logo=github&logoColor=white)](https://github.com/ExaDev/dependency-heal) [![Release](https://img.shields.io/github/v/release/ExaDev/dependency-heal)](https://github.com/ExaDev/dependency-heal/releases/latest) [![CI](https://img.shields.io/github/actions/workflow/status/ExaDev/dependency-heal/ci.yml?branch=main)](https://github.com/ExaDev/dependency-heal/actions)
+
 A reusable GitHub Actions workflow that bumps a sibling ExaDev-published dependency the instant it releases, and heals any resulting pull request that falls behind `main` before it can merge.
 
 ## Why this exists
