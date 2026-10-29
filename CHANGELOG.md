@@ -1,5 +1,10 @@
 ## [1.0.8](https://github.com/ExaDev/dependency-heal/compare/v1.0.7...v1.0.8) (2026-10-06)
 
+### Chores
+
+- disable turbo agentGuidance, which replaces the AGENTS.md symlink with a regular file ([486b70a](https://github.com/ExaDev/dependency-heal/commit/486b70a75f8bb7dbe8de32a17e18534a2a941500))
+- upgrade turbo to 2.11.5 and disable agentGuidance ([5e9fca0](https://github.com/ExaDev/dependency-heal/commit/5e9fca0823ae2f61dbf93cb401956d5bea9a23c1))
+
 ## [1.0.7](https://github.com/ExaDev/dependency-heal/compare/v1.0.6...v1.0.7) (2026-09-28)
 
 ### Bug Fixes
