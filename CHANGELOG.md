@@ -1,3 +1,13 @@
+## [1.0.9](https://github.com/ExaDev/dependency-heal/compare/v1.0.8...v1.0.9) (2026-10-29)
+
+### Bug Fixes
+
+- list every commit type in the release notes ([7d3e4ea](https://github.com/ExaDev/dependency-heal/commit/7d3e4ea49ef9a012ffecd26c2eff3751afb0f5cb))
+
+### Documentation
+
+- list the commits behind each release that had an empty changelog entry ([8c6775b](https://github.com/ExaDev/dependency-heal/commit/8c6775b2cde9e3e0248801bff81eec8b969aca3e))
+
 ## [1.0.8](https://github.com/ExaDev/dependency-heal/compare/v1.0.7...v1.0.8) (2026-10-06)
 
 ### Chores
