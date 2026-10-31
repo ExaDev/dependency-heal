@@ -1,3 +1,9 @@
+## [1.0.11](https://github.com/ExaDev/dependency-heal/compare/v1.0.10...v1.0.11) (2026-10-31)
+
+### Continuous Integration
+
+- push the release over SSH with a deploy key ([9150f52](https://github.com/ExaDev/dependency-heal/commit/9150f5204f9a05b060bc40b5e57f4c9f767780c0))
+
 ## [1.0.10](https://github.com/ExaDev/dependency-heal/compare/v1.0.9...v1.0.10) (2026-10-29)
 
 ### Documentation
